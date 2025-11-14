@@ -2,6 +2,7 @@ import os
 import json
 import re
 from typing import List, Optional
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, conint, confloat
@@ -12,6 +13,9 @@ try:
     load_dotenv()
 except Exception:
     pass
+
+# Logging básico (em produção, ajuste para JSON logs/níveis adequados)
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s %(message)s')
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -50,6 +54,35 @@ class AjusteResponse(BaseModel):
     recomendacoesAutocuidado: List[str] = []
     planoDia: Optional[List[PlanoDiaItem]] = None
     rawText: Optional[str] = None
+    error: Optional[str] = None
+
+
+def parse_text_fallback(text: str) -> AjusteResponse:
+    try:
+        # Quebra simples em linhas/marcadores e extrai heurísticas
+        parts = re.split(r"[\r\n\*•]+", text)
+        lines = [s.strip() for s in parts if s and s.strip()]
+        diagnostico = lines[0][:140] if lines else "Texto livre recebido."
+        suggestion_verbs = re.compile(r"^(faça|pausa|respiração|alongamento|hidrate|caminhe|medite|planeje|descanse|evite|reduza|aumente|organize)", re.I)
+        recs = [l for l in lines[1:] if suggestion_verbs.search(l) or re.search(r"\d+\s?m(in)?", l)]
+        recs = recs[:5] if recs else ["Pausa leve 5m"]
+        ajuste_carga = None
+        m = re.search(r"(reduz\w+|diminu\w+|aument\w+|eleve)[^\.!?]{0,80}", text, re.I)
+        if m:
+            ajuste_carga = m.group(0).strip()
+        return AjusteResponse(
+            diagnostico=diagnostico,
+            ajusteCarga=ajuste_carga,
+            recomendacoesAutocuidado=recs,
+            rawText=text
+        )
+    except Exception as e:
+        return AjusteResponse(
+            diagnostico="Texto livre recebido.",
+            recomendacoesAutocuidado=["Pausa leve 5m"],
+            rawText=text,
+            error=str(e)
+        )
 
 
 def build_prompt(data: AjusteRequest) -> str:
@@ -102,6 +135,7 @@ def healthz():
 @app.post("/api/ai/ajuste", response_model=AjusteResponse)
 def ajustar_carga(req: AjusteRequest):
     if _client is None:
+        logging.error("Chamado /api/ai/ajuste sem cliente Gemini inicializado")
         raise HTTPException(status_code=500, detail="Cliente Gemini não inicializado. Configure GEMINI_API_KEY.")
 
     prompt = build_prompt(req)
@@ -112,6 +146,7 @@ def ajustar_carga(req: AjusteRequest):
             "max_output_tokens": int(os.getenv("GEN_MAX_TOKENS", "400")),
             "response_mime_type": "application/json",
         }
+        logging.info("Gerando conteúdo com modelo=%s", MODEL_NAME)
         resp = _client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
@@ -133,20 +168,19 @@ def ajustar_carga(req: AjusteRequest):
                     return AjusteResponse(**parsed2, rawText=text)
                 except Exception:
                     pass
-            # Fallback se não vier JSON
-            return AjusteResponse(
-                diagnostico="Texto livre recebido.",
-                recomendacoesAutocuidado=["Pausa leve 5m"],
-                rawText=text
-            )
+            # Fallback heurístico se não vier JSON estrito
+            logging.warning("Resposta não-JSON recebida; aplicando heurísticas de parsing")
+            return parse_text_fallback(text)
     except HTTPException:
         raise
     except Exception as e:
-        # Fallback seguro
+        # Fallback seguro com detalhe do erro
+        logging.exception("Erro ao gerar conteúdo da IA: %s", e)
         return AjusteResponse(
             diagnostico="Falha na IA",
             recomendacoesAutocuidado=["Respiração 4-7-8", "Alongamento rápido"],
-            rawText=str(e)
+            rawText=str(e),
+            error=str(e)
         )
 
 
