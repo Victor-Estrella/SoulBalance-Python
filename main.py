@@ -152,8 +152,66 @@ def ajustar_carga(req: AjusteRequest):
             contents=prompt,
             config=generation_config,
         )
-        text = getattr(resp, "text", None)
-        if not text:
+        # Tentativa robusta de extrair texto da resposta do SDK (várias versões do SDK usam formatos diferentes)
+        def _extract_text(rsp):
+            try:
+                # comum: atributo 'text'
+                if hasattr(rsp, 'text') and getattr(rsp, 'text'):
+                    return getattr(rsp, 'text')
+                # alguns SDKs usam 'output' (lista) com blocos 'content' contendo dicionários com 'text'
+                out = getattr(rsp, 'output', None) or getattr(rsp, 'outputs', None)
+                if out:
+                    # pode ser pydantic model or list
+                    try:
+                        for block in out:
+                            # se for dict-like
+                            if isinstance(block, dict):
+                                content = block.get('content') or block.get('text')
+                                if content:
+                                    if isinstance(content, list):
+                                        pieces = []
+                                        for c in content:
+                                            if isinstance(c, dict):
+                                                t = c.get('text') or c.get('content') or c.get('type')
+                                                if t: pieces.append(str(t))
+                                            else:
+                                                pieces.append(str(c))
+                                        if pieces:
+                                            return '\n'.join(pieces)
+                                    else:
+                                        return str(content)
+                            else:
+                                # block might be object with .text
+                                if hasattr(block, 'text') and getattr(block, 'text'):
+                                    return getattr(block, 'text')
+                    except Exception:
+                        pass
+                # alguns retornos contém 'candidates' ou 'generations'
+                cand = getattr(rsp, 'candidates', None) or getattr(rsp, 'generations', None)
+                if cand:
+                    try:
+                        if isinstance(cand, list) and len(cand) > 0:
+                            first = cand[0]
+                            if isinstance(first, dict):
+                                return first.get('text') or first.get('content') or None
+                            if hasattr(first, 'text'):
+                                return getattr(first, 'text')
+                    except Exception:
+                        pass
+                # último recurso: str() ou repr()
+                return str(rsp)
+            except Exception as e:
+                logging.exception('Erro extraindo texto da resposta: %s', e)
+                return None
+
+        text = _extract_text(resp)
+        if not text or (isinstance(text, str) and text.strip() == ''):
+            # registra representação completa para diagnóstico
+            try:
+                rep = repr(resp)
+            except Exception:
+                rep = str(resp)
+            logging.warning('Resposta da IA sem conteúdo textual. resp_repr=%s', rep)
             raise ValueError("Resposta vazia da IA")
         try:
             parsed = json.loads(text)
