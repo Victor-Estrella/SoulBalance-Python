@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -105,10 +106,16 @@ def ajustar_carga(req: AjusteRequest):
 
     prompt = build_prompt(req)
     try:
-        # API conforme notebook (google.genai)
+        # API conforme notebook (google.genai) forçando retorno JSON
+        generation_config = {
+            "temperature": float(os.getenv("GEN_TEMPERATURE", "0.3")),
+            "max_output_tokens": int(os.getenv("GEN_MAX_TOKENS", "400")),
+            "response_mime_type": "application/json",
+        }
         resp = _client.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt
+            contents=prompt,
+            generation_config=generation_config,
         )
         text = getattr(resp, "text", None)
         if not text:
@@ -118,6 +125,14 @@ def ajustar_carga(req: AjusteRequest):
             # Valida contra o schema de resposta e retorna
             return AjusteResponse(**parsed, rawText=text)
         except Exception:
+            # Tenta extrair um bloco JSON de dentro do texto livre
+            m = re.search(r"\{[\s\S]*\}", text)
+            if m:
+                try:
+                    parsed2 = json.loads(m.group(0))
+                    return AjusteResponse(**parsed2, rawText=text)
+                except Exception:
+                    pass
             # Fallback se não vier JSON
             return AjusteResponse(
                 diagnostico="Texto livre recebido.",
