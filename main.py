@@ -3,7 +3,7 @@ import json
 import re
 from typing import List, Optional
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, conint, confloat
 
@@ -182,6 +182,21 @@ def ajustar_carga(req: AjusteRequest):
             rawText=str(e),
             error=str(e)
         )
+
+
+@app.post("/debug/echo")
+async def debug_echo(request: Request):
+    try:
+        data = await request.json()
+        return {"ok": True, "received": data}
+    except Exception as e:
+        raw = await request.body()
+        return {
+            "ok": False,
+            "error": str(e),
+            "raw": raw.decode("utf-8", "ignore"),
+            "content_type": request.headers.get("content-type")
+        }
 
 
 if __name__ == "__main__":
