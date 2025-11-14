@@ -150,7 +150,7 @@ def ajustar_carga(req: AjusteRequest):
         resp = _client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
-            generation_config=generation_config,
+            config=generation_config,
         )
         text = getattr(resp, "text", None)
         if not text:
