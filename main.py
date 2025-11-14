@@ -1,5 +1,6 @@
 import os
 from typing import List, Optional
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +22,61 @@ class AjusteResponse(BaseModel):
     recomendacoesAutocuidado: List[str]
     planoDia: Optional[list] = None
     rawText: Optional[str] = None
+
+
+def parse_raw_text(text: str) -> tuple[str, Optional[str], List[str]]:
+    """Extrai diagnostico, ajusteCarga e recomendações de autocuidado do texto rico da IA.
+
+    A lógica é simples e tolerante: se algo não for encontrado, devolve valores seguros.
+    """
+    if not text:
+        return "Texto livre recebido.", None, ["Pausa leve 5m"]
+
+    # Normaliza quebras de linha e remove excesso de espaços
+    normalized = text.replace("\r", "")
+
+    # 1) Diagnóstico Rápido: pegamos o parágrafo após o título correspondente
+    diag = None
+    m_diag = re.search(r"diagn[óo]stico\s+r[áa]pido[:\n]*(.+?)(?:\n\s*\n|\n\s*\*\*Ajuste|\Z)", normalized, re.IGNORECASE | re.DOTALL)
+    if m_diag:
+        diag_raw = m_diag.group(1)
+        diag = " ".join(line.strip() for line in diag_raw.strip().split("\n") if line.strip())
+
+    # 2) Ajuste de Carga: parágrafo após o título correspondente
+    ajuste = None
+    m_aj = re.search(r"ajuste\s+de\s+carga\s+sugerido[:\n]*(.+?)(?:\n\s*\n|\n\s*\*\*Recomenda|\Z)", normalized, re.IGNORECASE | re.DOTALL,
+)
+    if m_aj:
+        aj_raw = m_aj.group(1)
+        ajuste = " ".join(line.strip() for line in aj_raw.strip().split("\n") if line.strip())
+
+    # 3) Recomendações de Autocuidado: linhas numeradas (1., 2., etc) depois da seção
+    recs: List[str] = []
+    m_auto = re.search(r"recomenda[çc][ãa]o\s+de\s+autocuidado[:\n]*(.+)", normalized, re.IGNORECASE | re.DOTALL)
+    if m_auto:
+        bloco = m_auto.group(1)
+        for line in bloco.split("\n"):
+            line = line.strip(" -*\t")
+            m_item = re.match(r"\d+\.\s*(.+)", line)
+            if m_item:
+                item = m_item.group(1).strip()
+                if item:
+                    recs.append(item)
+
+    if not diag:
+        # fallback: primeira linha não vazia
+        for line in normalized.split("\n"):
+            line = line.strip()
+            if line:
+                diag = line
+                break
+    if not diag:
+        diag = "Texto livre recebido."
+
+    if not recs:
+        recs = ["Pausa leve 5m"]
+
+    return diag, ajuste, recs
 
 
 API_KEY = os.getenv("GEMINI_API_KEY") or ""
@@ -96,11 +152,11 @@ def ajustar_carga(req: AjusteRequest):
             contents=prompt,
         )
         text = getattr(response, "text", None) or str(response)
-        # Por enquanto, devolvemos texto livre em rawText e um diagnóstico simples
+        diagnostico, ajuste, recs = parse_raw_text(text)
         return AjusteResponse(
-            diagnostico="Gerado com sucesso",
-            ajusteCarga=None,
-            recomendacoesAutocuidado=["Pausa leve 5m"],
+            diagnostico=diagnostico,
+            ajusteCarga=ajuste,
+            recomendacoesAutocuidado=recs,
             planoDia=None,
             rawText=text,
         )
