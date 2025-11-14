@@ -190,12 +190,58 @@ def ajustar_carga(req: AjusteRequest):
                 cand = getattr(rsp, 'candidates', None) or getattr(rsp, 'generations', None)
                 if cand:
                     try:
+                        # Tenta vasculhar recursivamente qualquer texto presente nos candidatos
+                        def _collect_strings(o, max_items=20):
+                            found = []
+                            def _walk(x, depth=0):
+                                if x is None or len(found) >= max_items:
+                                    return
+                                if isinstance(x, str):
+                                    found.append(x)
+                                    return
+                                if isinstance(x, (list, tuple)):
+                                    for it in x:
+                                        _walk(it, depth+1)
+                                    return
+                                if isinstance(x, dict):
+                                    for k, v in x.items():
+                                        # chaves prováveis
+                                        if k.lower() in ('text','content','parts','message') and isinstance(v, (str,list,dict)):
+                                            _walk(v, depth+1)
+                                        else:
+                                            _walk(v, depth+1)
+                                    return
+                                # objeto com atributos
+                                try:
+                                    attrs = getattr(x, '__dict__', None)
+                                    if attrs:
+                                        for k, v in attrs.items():
+                                            if k.lower() in ('text','content','parts','message'):
+                                                _walk(v, depth+1)
+                                            else:
+                                                _walk(v, depth+1)
+                                        return
+                                except Exception:
+                                    pass
+                                # fallback para str()
+                                try:
+                                    s = str(x)
+                                    if s:
+                                        found.append(s)
+                                except Exception:
+                                    pass
+                            _walk(o)
+                            return found
+
                         if isinstance(cand, list) and len(cand) > 0:
-                            first = cand[0]
-                            if isinstance(first, dict):
-                                return first.get('text') or first.get('content') or None
-                            if hasattr(first, 'text'):
-                                return getattr(first, 'text')
+                            pieces = _collect_strings(cand)
+                            if pieces:
+                                return '\n'.join(pieces)
+                            # última tentativa: pega o primeiro e str()
+                            try:
+                                return str(cand[0])
+                            except Exception:
+                                return None
                     except Exception:
                         pass
                 # último recurso: str() ou repr()
